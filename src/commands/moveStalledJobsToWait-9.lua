@@ -52,14 +52,13 @@ rcall("SET", stalledCheckKey, timestamp, "PX", maxCheckTime)
 trimEvents(metaKey, eventStreamKey)
 
 -- Move all stalled jobs to wait
-local stalling = rcall('SMEMBERS', stalledKey)
+local stalling = rcall('SPOP', stalledKey, 10000)
 local stalled = {}
 if (#stalling > 0) then
     rcall('DEL', stalledKey)
 
     -- Remove from active list
-    for i, jobId in ipairs(stalling) do
-        -- Markers in waitlist DEPRECATED in v5: Remove in v6.
+    for i, jobId in ipairs(stalling) do        -- Markers in waitlist DEPRECATED in v5: Remove in v6.
         if string.sub(jobId, 1, 2) == "0:" then
             -- If the jobId is a delay marker ID we just remove it.
             rcall("LREM", activeKey, 1, jobId)
@@ -112,9 +111,16 @@ if (#stalling > 0) then
 end
 
 -- Mark potentially stalled jobs
-local active = rcall('LRANGE', activeKey, 0, -1)
-
-if (#active > 0) then
+local activeLen = rcall('LLEN', activeKey)
+if (activeLen > 0) then
+    local activeChunk = math.min(activeLen, 10000)
+    local active = {}
+    for i = 1, activeChunk do
+        local jobId = rcall('RPOPLPUSH', activeKey, activeKey)
+        if jobId then
+            table.insert(active, jobId)
+        end
+    end
     for from, to in batches(#active, 7000) do
         rcall('SADD', stalledKey, unpack(active, from, to))
     end

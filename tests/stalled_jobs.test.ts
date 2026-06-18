@@ -1181,4 +1181,65 @@ describe('stalled jobs', () => {
 
     await worker2.close();
   });
+
+  describe('when there are heavily saturated queue conditions with > 10000 jobs', () => {
+    it('bounds SPOP and RPOPLPUSH active loops capped at 10000 items', async () => {
+      const activeKey = queue.keys.active;
+      const stalledKey = queue.keys.stalled;
+      const client = await queue.client;
+
+      const dummyJobs = Array.from({ length: 12000 }, (_, i) => `dummy-job-${i}`);
+
+      await client.rpush(activeKey, ...dummyJobs);
+
+      const activeLength = await client.llen(activeKey);
+      expect(activeLength).toBe(12000);
+
+      const worker = new Worker(queueName, NoopProc, {
+        connection,
+        prefix,
+      });
+      await worker.waitUntilReady();
+
+      const scripts = (worker as any).scripts;
+      await scripts.moveStalledJobsToWait();
+
+      const stalledCount = await client.scard(stalledKey);
+      expect(stalledCount).toBe(10000);
+
+      await client.del(activeKey, stalledKey);
+      await worker.close();
+    });
+
+    it('bounds SPOP loop capped at 10000 items', async () => {
+      const activeKey = queue.keys.active;
+      const stalledKey = queue.keys.stalled;
+      const client = await queue.client;
+
+      const dummyJobs = Array.from({ length: 12000 }, (_, i) => `dummy-job-${i}`);
+
+      await client.sadd(stalledKey, ...dummyJobs.slice(0, 6000));
+      await client.sadd(stalledKey, ...dummyJobs.slice(6000));
+
+      const stalledCountBefore = await client.scard(stalledKey);
+      expect(stalledCountBefore).toBe(12000);
+
+      await client.rpush(activeKey, ...dummyJobs);
+
+      const worker = new Worker(queueName, NoopProc, {
+        connection,
+        prefix,
+      });
+      await worker.waitUntilReady();
+
+      const scripts = (worker as any).scripts;
+      await scripts.moveStalledJobsToWait();
+
+      const stalledCountAfter = await client.scard(stalledKey);
+      expect(stalledCountAfter).toBe(2000);
+
+      await client.del(activeKey, stalledKey);
+      await worker.close();
+    });
+  });
 });
